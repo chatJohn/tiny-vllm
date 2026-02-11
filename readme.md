@@ -1,4 +1,4 @@
-# Tiny-VLLM: vllm-like inference system by myself
+# myVLLM-MOE: nano-vllm to match up Qwen3-MOE Model
 ## 🪄 Features:
 - 
 ## 🪜 Structure
