@@ -1,6 +1,7 @@
-# myVLLM-MOE: nano-vllm to match up Qwen3-MOE Model
+# Multiple models adapted for nano-vllm
 ## 🪄 Features:
-- 
+- Multiple Models: Llama2, Qwen2, Qwen3, Qwen3MOE
+- Self Cuda Kernels: 
 ## 🪜 Structure
 - 
 ## ⚒️ Requirements
