@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from nanovllm.utils.context import get_context
+from .cuda import project_cuda_ops
 
 
 class VocabParallelEmbedding(nn.Module):
@@ -38,7 +39,13 @@ class VocabParallelEmbedding(nn.Module):
         if self.tp_size > 1:
             mask = (x >= self.vocab_start_idx) & (x < self.vocab_end_idx)
             x = mask * (x - self.vocab_start_idx)
-        y = F.embedding(x, self.weight)
+        # official
+        # y = F.embedding(x, self.weight)
+        # self kernel
+        y = torch.empty(input_ids.numel(), self.weight.data.size(-1), 
+                            device=input_ids.device, dtype=self.weight.data.dtype)
+        project_cuda_ops.embedding_bf16(y, self.weight, x)
+        print("Self Embedding Kernel Down")
         if self.tp_size > 1:
             y = mask.unsqueeze(1) * y
             dist.all_reduce(y)
