@@ -42,7 +42,7 @@ def main(args):
 if __name__ == "__main__":
     argparse = argparse.ArgumentParser(description="nano vllm")
     argparse.add_argument(
-        "--model-path", type=str, default="/nfs/ofs-llab-cold/model/Qwen/Qwen3-0.6B"
+        "--model-path", type=str, default="Qwen/Qwen3MOE-30B-A3B"
     )
     argparse.add_argument("--tensor-parallel-size", "--tp", type=int, default=1)
     argparse.add_argument("--enforce-eager", type=bool, default=True)
