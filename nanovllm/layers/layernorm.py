@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-
+from .cuda import project_cuda_ops
 
 class RMSNorm(nn.Module):
 
@@ -46,6 +46,13 @@ class RMSNorm(nn.Module):
         residual: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         if residual is None:
-            return self.rms_forward(x)
+            # Official
+            # return self.rms_forward(x)
+            # Self Kernel
+            output = torch.empty(x.shape, dtype=x.dtype, device=x.device)
+            project_cuda_ops.rmsnorm_bf16(output, x, self.weight.data, self.eps)
+            return output
+            
         else:
-            return self.add_rms_forward(x, residual)
+            project_cuda_ops.rmsnorm_fused_add_bf16(x, residual, self.weight.data, self.eps)
+            return x, residual
