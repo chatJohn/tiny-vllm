@@ -12,7 +12,7 @@ using bfloat16 = __nv_bfloat16;
     throw std::runtime_error("values must be " #th_type);                      \
   }
 
-
+// rope: relative position encoding for a pair element of one vector(eg., q) for a matrix(eg., Q)
 // one wrap process one head_dim
 // block(32, 8), grid(row / 8)
 __global__ void rotary_embedding_inplace_bf16_kernel(
