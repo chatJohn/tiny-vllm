@@ -3,6 +3,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from torch import nn
 
+from .cuda import project_cuda_ops
 
 def divide(numerator, denominator):
     assert numerator % denominator == 0
@@ -49,7 +50,19 @@ class ReplicatedLinear(LinearBase):
         param.data.copy_(loaded_weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # official
         return F.linear(x, self.weight, self.bias)
+        
+    # def forward(self, x: torch.Tensor) -> torch.Tensor:
+    #     out_shape = (*x.shape[:-1], self.weight.shape[-2])
+    #     when bias is `None` [Notice] 
+    #     output = torch.empty(
+    #         out_shape,
+    #         device=x.device,
+    #         dtype=x.dtype
+    #     )
+    #     project_cuda_ops.linear_bf16(x, self.weight.data, output)
+    #     return output
 
 
 class ColumnParallelLinear(LinearBase):
