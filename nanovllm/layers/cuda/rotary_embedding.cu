@@ -27,7 +27,7 @@ __global__ void rotary_embedding_inplace_bf16_kernel(
 ){
     const int lane_id = threadIdx.x;
     const int wrap_id = threadIdx.y;
-    const int row_id = blockDim.y * blockIdx.x + wrap_id;
+    const int row = blockDim.y * blockIdx.x + wrap_id;
     if(row < num_batched_tokens * num_heads_query){
         query = query + head_dim_half * 2 * row;
         const int64_t pos = positions[row / num_heads_query];
