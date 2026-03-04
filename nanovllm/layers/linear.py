@@ -28,7 +28,7 @@ class LinearBase(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
 
-
+# Base Linear, aka. `tp=1`, no parallelism
 class ReplicatedLinear(LinearBase):
 
     def __init__(
@@ -64,7 +64,7 @@ class ReplicatedLinear(LinearBase):
     #     project_cuda_ops.linear_bf16(x, self.weight.data, output)
     #     return output
 
-
+# [Notice]: `weight` shape is [output_size, input_size]
 class ColumnParallelLinear(LinearBase):
 
     def __init__(
