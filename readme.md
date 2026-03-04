@@ -18,7 +18,7 @@ tiny-vllm/
 │   ├── llm.py               # LLM接口
 │   ├── sampling_params.py   # 采样参数
 │   ├── model_executor.py    # 模型推理执行核心（封装前向计算、张量处理、设备适配逻辑）
-│   └── utils             # 工具
+│   └── utils                # 工具
 ├── example.py               # 功能验证示例（单卡推理/对话交互演示，验证核心模块可用性）
 ├── requirements.txt         # 项目依赖清单（torch/transformers等，适配轻量化部署）
 └── README.md                # 项目说明文档（背景、代码结构、运行步骤、核心实现说明）
@@ -30,4 +30,3 @@ tiny-vllm/
  - Pytorch 2.1.0
  - Transformer
  - Flash Attention
- 
