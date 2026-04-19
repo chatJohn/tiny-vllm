@@ -6,7 +6,7 @@ from torch import nn
 from nanovllm.utils.context import get_context
 from .cuda import project_cuda_ops
 
-
+# [Notice]: this function is for getting the embeddings
 class VocabParallelEmbedding(nn.Module):
 
     def __init__(
@@ -48,10 +48,10 @@ class VocabParallelEmbedding(nn.Module):
         print("Self Embedding Kernel Down")
         if self.tp_size > 1:
             y = mask.unsqueeze(1) * y
-            dist.all_reduce(y)
+            dist.all_reduce(y) # 由于在词表中查不到对应词的idx，所以直接返回0向量，所以最后需要allreduce
         return y
 
-
+# [Notice]: this function is for getting the logits, so concat
 class ParallelLMHead(VocabParallelEmbedding):
 
     def __init__(

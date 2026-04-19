@@ -30,3 +30,8 @@ tiny-vllm/
  - Pytorch 2.1.0
  - Transformer
  - Flash Attention
+
+
+## 📋 ToDos
+- Quant
+- Speculative Decoding  
