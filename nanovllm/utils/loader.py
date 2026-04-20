@@ -1,35 +1,44 @@
 import os
 from glob import glob
+from typing import Optional
 
 import torch
 from safetensors import safe_open
 from torch import nn
 
-from .quantization import create_quantized_linear
+from .quantization import apply_quantization
 
 
 def default_weight_loader(param: nn.Parameter, loaded_weight: torch.Tensor):
     param.data.copy_(loaded_weight)
 
 
-def load_model(model: nn.Module, path: str, quantization: str = "float16"):
-    """加载模型权重，支持量化
-    
-    Args:
-        model: 要加载权重的模型
-        path: 模型路径
-        quantization: 量化类型，可选"float16", "int8", "int4"
+def load_model(
+    model: nn.Module,
+    path: str,
+    quant_method: Optional[str] = None,
+    *,
+    quant_group_size: int = 128,
+    quant_bits: int = 4,
+):
+    """Load weights into ``model`` and optionally apply a post-training
+    quantization scheme.
+
+    Parameters
+    ----------
+    model : nn.Module
+        The model skeleton (with float weights allocated).
+    path : str
+        Directory containing ``*.safetensors`` weight files.
+    quant_method : Optional[str]
+        ``None`` for full-precision, ``"gptq"`` to apply GPTQ int4 quantization
+        after the float weights are loaded.
     """
     packed_modules_mapping = getattr(model, "packed_modules_mapping", {})
-    
-    # 如果使用量化，包装所有线性层
-    if quantization in ["int8", "int4"]:
-        quantize_model_linear_layers(model, quantization)
-    
+
     for file in glob(os.path.join(path, "*.safetensors")):
         with safe_open(file, "pt", "cpu") as f:
             for weight_name in f.keys():
-                print(f"{weight_name} {f.get_tensor(weight_name).shape}")
                 for k in packed_modules_mapping:
                     if k in weight_name:
                         v, shard_id = packed_modules_mapping[k]
@@ -44,32 +53,23 @@ def load_model(model: nn.Module, path: str, quantization: str = "float16"):
                         param, "weight_loader", default_weight_loader
                     )
                     weight_loader(param, f.get_tensor(weight_name))
-    
-    # 如果使用量化，对加载的权重进行量化
-    if quantization in ["int8", "int4"]:
-        quantize_model_weights(model, quantization)
 
-
-def quantize_model_linear_layers(model: nn.Module, quantization: str):
-    """将模型中的线性层替换为量化版本"""
-    for name, module in model.named_children():
-        if isinstance(module, (nn.Linear, LinearBase)):
-            # 替换为量化版本
-            quantized_module = create_quantized_linear(module, quantization)
-            setattr(model, name, quantized_module)
-        else:
-            # 递归处理子模块
-            quantize_model_linear_layers(module, quantization)
-
-
-def quantize_model_weights(model: nn.Module, quantization: str):
-    """对模型权重进行量化"""
-    for module in model.modules():
-        if hasattr(module, 'quantize_and_store') and hasattr(module, 'weight'):
-            module.quantize_and_store(module.weight.data)
-            # 释放原始权重内存
-            del module.weight
-            module.weight = None
+    # Apply quantization (if requested) once all float weights are loaded.
+    if quant_method is not None:
+        num_replaced = apply_quantization(
+            model,
+            quant_method=quant_method,
+            group_size=quant_group_size,
+            bits=quant_bits,
+            verbose=True,
+        )
+        print(
+            f"[load_model] applied {quant_method} quantization to "
+            f"{num_replaced} linear layers"
+        )
+        # Drop leftover GPU memory from the now-replaced float weights.
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def print_model(path: str):

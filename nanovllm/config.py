@@ -17,13 +17,20 @@ class Config:
     eos: int = -1
     kvcache_block_size: int = 256
     num_kvcache_blocks: int = -1
-    quantization: str = "float16"  # 添加量化类型参数: float16, int8, int4
+    # Quantization method applied after weights are loaded.
+    # None -> no quantization (original fp weights).
+    # "gptq" -> apply GPTQ int4 quantization to linear layers.
+    quant_method: str | None = None
+    quant_group_size: int = 128
+    quant_bits: int = 4
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
         assert self.kvcache_block_size % 256 == 0
         assert 1 <= self.tensor_parallel_size <= 8
-        assert self.quantization in ["float16", "int8", "int4"], "量化类型必须是float16、int8或int4"
+        assert self.quant_method in (None, "gptq"), (
+            f"quant_method must be None or 'gptq', got {self.quant_method!r}"
+        )
         self.hf_config = AutoConfig.from_pretrained(self.model)
         self.max_model_len = min(
             self.max_model_len, self.hf_config.max_position_embeddings

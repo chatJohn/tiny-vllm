@@ -33,7 +33,27 @@ class ModelRunner:
         torch.set_default_dtype(hf_config.torch_dtype)
         torch.set_default_device("cuda")
         self.model = model_dict[hf_config.model_type](hf_config)
-        load_model(self.model, config.model, config.quantization)  # 传递量化参数
+        load_model(
+            self.model,
+            config.model,
+            quant_method=config.quant_method,
+            quant_group_size=config.quant_group_size,
+            quant_bits=config.quant_bits,
+        )
+        # --- Report weight-only GPU memory usage for quantization debugging.
+        # We call empty_cache() first so the number reflects the *resident*
+        # tensors rather than any transient buffers left over from loading /
+        # quantization (which the caching allocator keeps around).
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        weight_bytes = torch.cuda.memory_allocated()
+        reserved_bytes = torch.cuda.memory_reserved()
+        if rank == 0:
+            print(
+                f"[ModelRunner] rank={rank} quant_method={config.quant_method} "
+                f"weight_resident={weight_bytes / 1024**2:.1f} MB  "
+                f"reserved(cache)={reserved_bytes / 1024**2:.1f} MB"
+            )
         self.sampler = Sampler()
         self.warmup_model()
         self.allocate_kv_cache()
