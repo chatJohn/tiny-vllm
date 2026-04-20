@@ -34,9 +34,9 @@ def apply_quantization(
     precision and nothing is changed.  Returns the number of layers that were
     replaced with a quantized version.
     """
-    if quant_method in (None, "none", "float16", "fp16", "bf16"):
+    if quant_method is None:
         return 0
-    if quant_method == "gptq":
+    elif quant_method == "gptq":
         return apply_gptq_to_module(
             model,
             group_size=group_size,
@@ -44,7 +44,8 @@ def apply_quantization(
             compute_dtype=compute_dtype,
             verbose=verbose,
         )
-    raise ValueError(
-        f"Unsupported quant_method: {quant_method!r}. "
-        f"Supported methods: {SUPPORTED_QUANT_METHODS}"
-    )
+    else:
+        raise ValueError(
+            f"Unsupported quant_method: {quant_method!r}. "
+            f"Supported methods: {SUPPORTED_QUANT_METHODS}"
+        )
