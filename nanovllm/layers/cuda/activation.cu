@@ -16,7 +16,7 @@ __device__ __forceinline__ T silu(const T& x){
     return (T)(((float)x )/ (1.0f + expf((float)(-x))));
 }
 
-__global__ void silu_and_mul_bf16_kernel(bfloat16* output, bfloat16* x, bfloat* y, const int N){
+__global__ void silu_and_mul_bf16_kernel(bfloat16* output, bfloat16* x, bfloat16* y, const int N){  // 修复：bfloat*改为bfloat16*
     const int tx = threadIdx.x;
     const int bx = blockIdx.x;
     const int idx = tx + bx * blockDim.x;
@@ -57,8 +57,8 @@ __global__ void silu_and_mul_bf16x8_kernel(
 
 void silu_and_mul_bf16(torch::Tensor &output, torch::Tensor &x, torch::Tensor &y){
     CHECK_TORCH_TENSOR_DTYPE(output, torch::kBFloat16);
-    CHECK_TORCH_TENSOR_DTYPE(x, torch::BFloat16);
-    CHECK_TORCH_TENSOR_DTYPE(y, torch::BFloat16);
+    CHECK_TORCH_TENSOR_DTYPE(x, torch::kBFloat16);  // 修复：torch::BFloat16改为torch::kBFloat16
+    CHECK_TORCH_TENSOR_DTYPE(y, torch::kBFloat16);  // 修复：torch::BFloat16改为torch::kBFloat16
     int64_t N = x.numel();
     dim3 block(256);
     dim3 grid((N + 256 * 8 - 1) / (256 * 8));

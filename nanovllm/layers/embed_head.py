@@ -40,12 +40,12 @@ class VocabParallelEmbedding(nn.Module):
             mask = (x >= self.vocab_start_idx) & (x < self.vocab_end_idx)
             x = mask * (x - self.vocab_start_idx)
         # official
-        # y = F.embedding(x, self.weight)
+        y = F.embedding(x, self.weight)
         # self kernel
-        y = torch.empty(input_ids.numel(), self.weight.data.size(-1), 
-                            device=input_ids.device, dtype=self.weight.data.dtype)
-        project_cuda_ops.embedding_bf16(y, self.weight, x)
-        print("Self Embedding Kernel Down")
+        # y = torch.empty(x.numel(), self.weight.data.size(-1), 
+        #                     device=x.device, dtype=self.weight.data.dtype)
+        # project_cuda_ops.embedding_bf16(y, self.weight, x)
+        # print("Self Embedding Kernel Down")
         if self.tp_size > 1:
             y = mask.unsqueeze(1) * y
             dist.all_reduce(y) # 由于在词表中查不到对应词的idx，所以直接返回0向量，所以最后需要allreduce

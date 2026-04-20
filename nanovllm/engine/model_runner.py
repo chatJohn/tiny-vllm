@@ -33,7 +33,7 @@ class ModelRunner:
         torch.set_default_dtype(hf_config.torch_dtype)
         torch.set_default_device("cuda")
         self.model = model_dict[hf_config.model_type](hf_config)
-        load_model(self.model, config.model)
+        load_model(self.model, config.model, config.quantization)  # 传递量化参数
         self.sampler = Sampler()
         self.warmup_model()
         self.allocate_kv_cache()

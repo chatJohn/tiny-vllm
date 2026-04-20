@@ -13,6 +13,7 @@ def main(args):
         path,
         enforce_eager=args.enforce_eager,
         tensor_parallel_size=args.tensor_parallel_size,
+        quantization=args.quantization,  # 添加量化参数
     )
 
     sampling_params = SamplingParams(
@@ -48,6 +49,9 @@ if __name__ == "__main__":
     argparse.add_argument("--enforce-eager", type=bool, default=True)
     argparse.add_argument("--temperature", type=float, default=0.6)
     argparse.add_argument("--max-tokens", type=int, default=256)
+    argparse.add_argument("--quantization", type=str, default="float16", 
+                        choices=["float16", "int8", "int4"],
+                        help="量化类型: float16, int8, int4")  # 添加量化参数选项
     args = argparse.parse_args()
 
     main(args)

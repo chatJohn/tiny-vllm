@@ -28,7 +28,7 @@ __global__ void rmsnorm_bf16_kernel(bfloat16* output, bfloat16* input, bfloat16*
     input = input + row * hidden_size;
     float sum = 0.f;
     for(int i = tid; i < hidden_size; i += blockDim.x){
-        float x = reinterpret_cast<float>(input[i]);
+        float x = static_cast<float>(input[i]);  // 修复：使用static_cast而不是reinterpret_cast
         sum += x * x;
     }
     sum = wrap_reduce(sum); // partial wrap for one block, so there are many wraps
@@ -52,7 +52,7 @@ __global__ void rmsnorm_bf16_kernel(bfloat16* output, bfloat16* input, bfloat16*
     __syncthreads();
     sum = sdata[0];
     for(int i = tid; i < hidden_size; i += blockDim.x){
-        float x = reinterpret_cast<float>(input[i]);
+        float x = static_cast<float>(input[i]);  // 修复：使用static_cast而不是reinterpret_cast
         output[i] = (bfloat16)(x * sum) * weight[i];
     }
 }
@@ -66,8 +66,8 @@ __global__ void rmsnorm_fused_add_implace_bf16_kernel(bfloat16* input, bfloat16*
     residual = residual + row * hidden_size;
     float var = 0.f;
     for(int i = tid; i < hidden_size; i += blockDim.x){
-        float x = reinterpret_cast<float>(input[i]);
-        float r = reinterpret_cast<float>(residual[i]);
+        float x = static_cast<float>(input[i]);  // 修复：使用static_cast而不是reinterpret_cast
+        float r = static_cast<float>(residual[i]);  // 修复：使用static_cast而不是reinterpret_cast
         x = x + r;
         residual[i] = (bfloat16)x;
         var += x * x;
@@ -93,7 +93,7 @@ __global__ void rmsnorm_fused_add_implace_bf16_kernel(bfloat16* input, bfloat16*
     __syncthreads();
     var = sdata[0];
     for(int i = tid; i < hidden_size; i += blockDim.x){
-        float x = reinterpret_cast<float>(residual[i]);
+        float x = static_cast<float>(residual[i]);  // 修复：使用static_cast而不是reinterpret_cast
         input[i] = (bfloat16)(x * var) * weight[i];
     } 
 }

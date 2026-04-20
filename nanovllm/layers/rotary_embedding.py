@@ -39,34 +39,34 @@ class RotaryEmbedding(nn.Module):
         cache = torch.cat((cos, sin), dim=-1)
         self.register_buffer("cos_sin_cache", cache, persistent=False)
     # Official
-    # @torch.compile
-    # def forward(
-    #     self,
-    #     positions: torch.Tensor,
-    #     query: torch.Tensor,
-    #     key: torch.Tensor,
-    # ) -> tuple[torch.Tensor, torch.Tensor]:
-    #     num_tokens = positions.size(0)
-    #     cos_sin = self.cos_sin_cache[positions]
-    #     cos, sin = cos_sin.chunk(2, dim=-1)
-    #     query_shape = query.shape
-    #     query = query.view(num_tokens, -1, self.head_size)
-    #     query = apply_rotary_emb(query, cos, sin).view(query_shape)
-    #     key_shape = key.shape
-    #     key = key.view(num_tokens, -1, self.head_size)
-    #     key = apply_rotary_emb(key, cos, sin).view(key_shape)
-    #     return query, key
-    # Self Kernel
+    @torch.compile
     def forward(
         self,
         positions: torch.Tensor,
         query: torch.Tensor,
-        key: torch.Tensor
+        key: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        project_cuda_ops.rotary_embedding_bf16( 
-            position, query, key, self.cos_sim_cache.data
-        )
+        num_tokens = positions.size(0)
+        cos_sin = self.cos_sin_cache[positions]
+        cos, sin = cos_sin.chunk(2, dim=-1)
+        query_shape = query.shape
+        query = query.view(num_tokens, -1, self.head_size)
+        query = apply_rotary_emb(query, cos, sin).view(query_shape)
+        key_shape = key.shape
+        key = key.view(num_tokens, -1, self.head_size)
+        key = apply_rotary_emb(key, cos, sin).view(key_shape)
         return query, key
+    # Self Kernel
+    # def forward(
+    #     self,
+    #     positions: torch.Tensor,
+    #     query: torch.Tensor,
+    #     key: torch.Tensor
+    # ) -> tuple[torch.Tensor, torch.Tensor]:
+    #     project_cuda_ops.rotary_embedding_bf16( 
+    #         positions, query, key, self.cos_sin_cache.data  # 修复：将position改为positions
+    #     )
+    #     return query, key
 
 @lru_cache(1)
 def get_rope(
