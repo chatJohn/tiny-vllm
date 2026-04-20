@@ -140,33 +140,79 @@ class ModelRunner:
             if hasattr(hf_config, "head_dim")
             else hf_config.hidden_size // hf_config.num_attention_heads
         )
-        block_bytes = (
-            2
-            * hf_config.num_hidden_layers
-            * self.block_size
-            * num_kv_heads
-            * head_dim
-            * hf_config.torch_dtype.itemsize
-        )
+        use_int8_kv = config.kvcache_quant == "int8"
+        fp_itemsize = hf_config.torch_dtype.itemsize
+        if use_int8_kv:
+            # Each (token, head) stores head_dim int8 + one fp scale per
+            # tensor (K + V).  Formula per block:
+            #   2 * num_layers * block_size * num_kv_heads * (head_dim + fp_itemsize)
+            per_token_per_head_bytes = head_dim * 1 + fp_itemsize  # 1 byte per int8
+            block_bytes = (
+                2
+                * hf_config.num_hidden_layers
+                * self.block_size
+                * num_kv_heads
+                * per_token_per_head_bytes
+            )
+        else:
+            block_bytes = (
+                2
+                * hf_config.num_hidden_layers
+                * self.block_size
+                * num_kv_heads
+                * head_dim
+                * fp_itemsize
+            )
         config.num_kvcache_blocks = (
             int(total * config.gpu_memory_utilization - used - peak + current)
             // block_bytes
         )
         assert config.num_kvcache_blocks > 0
-        self.kv_cache = torch.zeros(
-            2,
-            hf_config.num_hidden_layers,
-            config.num_kvcache_blocks,
-            self.block_size,
-            num_kv_heads,
-            head_dim,
-        )
-        layer_id = 0
-        for module in self.model.modules():
-            if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
-                module.k_cache = self.kv_cache[0, layer_id]
-                module.v_cache = self.kv_cache[1, layer_id]
-                layer_id += 1
+
+        if use_int8_kv:
+            # Separate int8 storage for K / V, plus per-token per-head fp scales.
+            num_layers = hf_config.num_hidden_layers
+            num_blocks = config.num_kvcache_blocks
+            # Shape: [2, num_layers, num_blocks, block_size, num_kv_heads, head_dim]
+            self.kv_cache_q = torch.zeros(
+                2, num_layers, num_blocks, self.block_size,
+                num_kv_heads, head_dim, dtype=torch.int8,
+            )
+            # Scales: [2, num_layers, num_blocks, block_size, num_kv_heads]
+            self.kv_scale = torch.zeros(
+                2, num_layers, num_blocks, self.block_size, num_kv_heads,
+                dtype=hf_config.torch_dtype,
+            )
+            # keep a dummy fp cache handle so the fp code-path is unused
+            self.kv_cache = torch.zeros(1)  # keep a small placeholder
+            layer_id = 0
+            for module in self.model.modules():
+                if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
+                    module.kv_quant = "int8"
+                    module.k_cache_q = self.kv_cache_q[0, layer_id]
+                    module.v_cache_q = self.kv_cache_q[1, layer_id]
+                    module.k_scale = self.kv_scale[0, layer_id]
+                    module.v_scale = self.kv_scale[1, layer_id]
+                    # Empty fp caches so the existing ``.numel()`` guard
+                    # in Attention.forward keeps working cleanly.
+                    module.k_cache = torch.tensor([])
+                    module.v_cache = torch.tensor([])
+                    layer_id += 1
+        else:
+            self.kv_cache = torch.zeros(
+                2,
+                hf_config.num_hidden_layers,
+                config.num_kvcache_blocks,
+                self.block_size,
+                num_kv_heads,
+                head_dim,
+            )
+            layer_id = 0
+            for module in self.model.modules():
+                if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
+                    module.k_cache = self.kv_cache[0, layer_id]
+                    module.v_cache = self.kv_cache[1, layer_id]
+                    layer_id += 1
 
     def prepare_block_tables(self, seqs: list[Sequence]):
         max_len = max(len(seq.block_table) for seq in seqs)

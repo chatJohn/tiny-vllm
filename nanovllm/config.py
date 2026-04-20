@@ -23,6 +23,10 @@ class Config:
     quant_method: str | None = None
     quant_group_size: int = 128
     quant_bits: int = 4
+    # KV-cache quantization: None keeps the cache in ``hf_config.torch_dtype``
+    # (usually bf16/fp16); "int8" stores K/V as int8 + per-token-per-head fp
+    # scales -- roughly halves the KV-cache memory footprint.
+    kvcache_quant: str | None = None
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
@@ -30,6 +34,9 @@ class Config:
         assert 1 <= self.tensor_parallel_size <= 8
         assert self.quant_method in (None, "gptq"), (
             f"quant_method must be None or 'gptq', got {self.quant_method!r}"
+        )
+        assert self.kvcache_quant in (None, "int8"), (
+            f"kvcache_quant must be None or 'int8', got {self.kvcache_quant!r}"
         )
         self.hf_config = AutoConfig.from_pretrained(self.model)
         self.max_model_len = min(

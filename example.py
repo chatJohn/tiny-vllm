@@ -12,6 +12,9 @@ def main(args):
     quant_method = args.quant_method
     if quant_method == "none":
         quant_method = None
+    kvcache_quant = args.kvcache_quant
+    if kvcache_quant == "none":
+        kvcache_quant = None
     llm = LLM(
         path,
         enforce_eager=args.enforce_eager,
@@ -19,6 +22,7 @@ def main(args):
         quant_method=quant_method,
         quant_group_size=args.quant_group_size,
         quant_bits=args.quant_bits,
+        kvcache_quant=kvcache_quant,
         gpu_memory_utilization=args.gpu_memory_util,
     )
 
@@ -74,6 +78,14 @@ if __name__ == "__main__":
         type=int,
         default=4,
         help="Number of bits (only 4 is currently supported for GPTQ).",
+    )
+    argparse.add_argument(
+        "--kvcache-quant",
+        type=str,
+        default="none",
+        choices=["none", "int8"],
+        help="KV-cache quantization: 'none' keeps fp cache, 'int8' stores "
+             "K/V as int8 with per-token per-head scales (~2x memory saving).",
     )
     argparse.add_argument(
         "--gpu-memory-util",
