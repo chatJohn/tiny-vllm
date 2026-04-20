@@ -90,6 +90,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--enforce-eager",
         action="store_true",
+        default=True,
         help="Disable CUDA graph capture (useful for debugging).",
     )
     parser.add_argument(
