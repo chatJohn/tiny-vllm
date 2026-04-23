@@ -78,3 +78,4 @@ For a PPL (quality) comparison before/after GPTQ, see
 ## 📋 ToDos
 - Quant
 - Speculative Decoding  
+- Expert Parallel
