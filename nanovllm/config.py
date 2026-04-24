@@ -50,9 +50,14 @@ class Config:
         assert 1 <= self.expert_parallel_size, (
             f"expert_paralle_size must be greater than 1"
         )
-        
+
         self.hf_config = AutoConfig.from_pretrained(self.model)
         self.max_model_len = min(
             self.max_model_len, self.hf_config.max_position_embeddings
         )
         assert self.max_num_batched_tokens >= self.max_model_len
+
+    @property
+    def world_size(self) -> int:
+        # Get how many ranks in used
+        return self.tensor_parallel_size * self.expert_parallel_size
