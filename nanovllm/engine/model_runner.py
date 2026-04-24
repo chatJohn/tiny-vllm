@@ -214,6 +214,21 @@ class ModelRunner:
                     module.v_cache = self.kv_cache[1, layer_id]
                     layer_id += 1
 
+        # --- Report GPU memory usage AFTER kv cache allocation so we can
+        # observe the effect of kvcache quantization on reserved memory.
+        torch.cuda.synchronize()
+        allocated_bytes = torch.cuda.memory_allocated()
+        reserved_bytes = torch.cuda.memory_reserved()
+        if self.rank == 0:
+            print(
+                f"[ModelRunner] rank={self.rank} kvcache_quant={config.kvcache_quant} "
+                f"num_kvcache_blocks={config.num_kvcache_blocks} "
+                f"block_bytes={block_bytes / 1024**2:.3f} MB  "
+                f"kv_total={config.num_kvcache_blocks * block_bytes / 1024**2:.1f} MB  "
+                f"allocated={allocated_bytes / 1024**2:.1f} MB  "
+                f"reserved(cache)={reserved_bytes / 1024**2:.1f} MB"
+            )
+
     def prepare_block_tables(self, seqs: list[Sequence]):
         max_len = max(len(seq.block_table) for seq in seqs)
         block_tables = [
