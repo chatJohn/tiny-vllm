@@ -28,6 +28,13 @@ class Config:
     # scales -- roughly halves the KV-cache memory footprint.
     kvcache_quant: str | None = None
 
+    # Expert Parallel Configration
+    expert_parallel_size: int = 1 # number of ranks
+    expert_parallel_group: list[int] | None = None # sepcify which rank is in the EP group
+    expert_parallel_communication_backend: str = "nccl"
+    expert_parallel_overlap_communication: bool = True # overlap communication and computation
+
+
     def __post_init__(self):
         assert os.path.isdir(self.model)
         assert self.kvcache_block_size % 256 == 0
@@ -38,6 +45,12 @@ class Config:
         assert self.kvcache_quant in (None, "int8"), (
             f"kvcache_quant must be None or 'int8', got {self.kvcache_quant!r}"
         )
+
+        # Expert Parallel Configuration Validation
+        assert 1 <= self.expert_parallel_size, (
+            f"expert_paralle_size must be greater than 1"
+        )
+        
         self.hf_config = AutoConfig.from_pretrained(self.model)
         self.max_model_len = min(
             self.max_model_len, self.hf_config.max_position_embeddings
