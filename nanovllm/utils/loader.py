@@ -13,6 +13,58 @@ def default_weight_loader(param: nn.Parameter, loaded_weight: torch.Tensor):
     param.data.copy_(loaded_weight)
 
 
+def _tensor_bytes(t: torch.Tensor) -> int:
+    return t.numel() * t.element_size()
+
+
+def _summarize_model_storage(model: nn.Module, tag: str) -> None:
+    """Print a per-dtype storage breakdown of a model's parameters + buffers.
+
+    This is extremely useful to verify the footprint change after a weight-only
+    quantization pass: before GPTQ we expect ~all bytes to be fp16/bf16, after
+    GPTQ the bulk should move into uint8 (packed INT4) with small fp16 scale /
+    zero buffers per group.
+    """
+    totals: dict[str, list[int]] = {}
+    linear_like = 0
+    gptq_like = 0
+    total_bytes = 0
+    total_numel = 0
+
+    for mod_name, module in model.named_modules():
+        # Track structural layer counts for quick before/after comparison
+        cls = type(module).__name__
+        if cls == "GPTQLinear":
+            gptq_like += 1
+        elif hasattr(module, "weight") and torch.is_tensor(getattr(module, "weight", None)) \
+                and module.weight is not None and module.weight.dim() == 2 \
+                and (hasattr(module, "in_features") or hasattr(module, "input_size")):
+            linear_like += 1
+
+    for name, t in list(model.named_parameters()) + list(model.named_buffers()):
+        if t is None:
+            continue
+        dtype = str(t.dtype).replace("torch.", "")
+        totals.setdefault(dtype, [0, 0])
+        b = _tensor_bytes(t)
+        totals[dtype][0] += t.numel()
+        totals[dtype][1] += b
+        total_numel += t.numel()
+        total_bytes += b
+
+    print(f"[load_model][{tag}] ---- weight storage summary ----")
+    print(
+        f"[load_model][{tag}] linear_layers(fp)={linear_like}  "
+        f"gptq_linear_layers={gptq_like}  "
+        f"total_numel={total_numel:,}  total_bytes={total_bytes/1024**2:.2f} MB"
+    )
+    for dtype, (nel, b) in sorted(totals.items(), key=lambda kv: -kv[1][1]):
+        print(
+            f"[load_model][{tag}]   dtype={dtype:<10} "
+            f"numel={nel:>14,}  bytes={b/1024**2:>10.2f} MB"
+        )
+
+
 def load_model(
     model: nn.Module,
     path: str,
@@ -55,6 +107,21 @@ def load_model(
                     weight_loader(param, f.get_tensor(weight_name))
 
     # Apply quantization (if requested) once all float weights are loaded.
+    # Always emit a "before" snapshot of the model's weight storage so that the
+    # effect of quantization (or the lack of it) is clearly visible in the
+    # terminal log.  Use torch.cuda.synchronize() + memory_allocated() to get
+    # an accurate before/after GPU footprint.
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        gpu_before = torch.cuda.memory_allocated()
+    else:
+        gpu_before = 0
+    _summarize_model_storage(model, tag="before_quant")
+    print(
+        f"[load_model][before_quant] cuda.memory_allocated="
+        f"{gpu_before/1024**2:.2f} MB"
+    )
+
     if quant_method is not None:
         num_replaced = apply_quantization(
             model,
@@ -65,11 +132,24 @@ def load_model(
         )
         print(
             f"[load_model] applied {quant_method} quantization to "
-            f"{num_replaced} linear layers"
+            f"{num_replaced} linear layers (group_size={quant_group_size}, "
+            f"bits={quant_bits})"
         )
         # Drop leftover GPU memory from the now-replaced float weights.
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            gpu_after = torch.cuda.memory_allocated()
+        else:
+            gpu_after = 0
+        _summarize_model_storage(model, tag="after_quant")
+        print(
+            f"[load_model][after_quant]  cuda.memory_allocated="
+            f"{gpu_after/1024**2:.2f} MB  "
+            f"delta={(gpu_after - gpu_before)/1024**2:+.2f} MB"
+        )
+    else:
+        print("[load_model] quant_method=None, model kept in full precision")
 
 
 def print_model(path: str):
