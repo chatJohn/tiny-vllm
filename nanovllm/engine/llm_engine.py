@@ -22,6 +22,7 @@ class LLMEngine:
         self.ps = []
         self.events = []
         ctx = mp.get_context("spawn")
+        # word_size = tp_size * ep_size, rank 0 is the main prcess
         for i in range(1, config.world_size):
             event = ctx.Event()
             process = ctx.Process(target=ModelRunner, args=(config, i, event))

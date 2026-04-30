@@ -21,18 +21,47 @@ class ModelRunner:
         hf_config = config.hf_config
         self.block_size = config.kvcache_block_size
         self.enforce_eager = config.enforce_eager
-        self.world_size = config.tensor_parallel_size
         self.rank = rank
         self.event = event
+        
+        tp_size = config.tensor_parallel_size
+        ep_size = config.expert_parallel_size
+        world_size = config.world_size
+
+        # global rank = tp_rank * ep_size + ep_rank
+        self.tp_rank = rank // ep_size
+        self.ep_rank = rank % ep_size
+        self.world_size = world_size
+        self.tp_size = tp_size
+        self.ep_size = ep_size
 
         dist.init_process_group(
             "nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank
         )
+
+        # build tp and ep group
+        for ep_r in range(ep_size):
+            tp_ranks = [ep_r + tp_r * ep_size for tp_r in range(tp_size)]
+            grp = dist.new_group(tp_ranks)
+            if self.ep_rank == ep_r:
+                self.tp_group = grp
+
+        for tp_r in range(tp_size):
+            ep_ranks = [ep_r + tp_r * tp_size for ep_r in range(ep_size)]
+            grp = dist.new_group(ep_ranks)
+            if self.tp_rank == tp_r:
+                self.ep_group = grp
+
+
         torch.cuda.set_device(rank)
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(hf_config.torch_dtype)
         torch.set_default_device("cuda")
-        self.model = model_dict[hf_config.model_type](hf_config)
+        self.model = model_dict[hf_config.model_type](
+            hf_config,
+            tp_group=self.tp_group,
+            ep_group=self.ep_group,
+        )
         load_model(
             self.model,
             config.model,
@@ -133,7 +162,7 @@ class ModelRunner:
         used = total - free
         peak = torch.cuda.memory_stats()["allocated_bytes.all.peak"]
         current = torch.cuda.memory_stats()["allocated_bytes.all.current"]
-        num_kv_heads = hf_config.num_key_value_heads // self.world_size
+        num_kv_heads = hf_config.num_key_value_heads // self.tp_size
         assert hf_config.hidden_size % hf_config.num_attention_heads == 0
         head_dim = (
             hf_config.head_dim

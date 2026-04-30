@@ -9,6 +9,14 @@ def divide(numerator, denominator):
     assert numerator % denominator == 0
     return numerator // denominator
 
+_TP_GROUP = None
+def set_tp_group(group):
+    global _TP_GROUP
+    _TP_GROUP = group
+
+def get_tp_group():
+    return _TP_GROUP
+
 
 class LinearBase(nn.Module):
 
@@ -22,8 +30,8 @@ class LinearBase(nn.Module):
         self.input_size = input_size
         self.output_size = output_size
         self.tp_dim = tp_dim
-        self.tp_rank = dist.get_rank()
-        self.tp_size = dist.get_world_size()
+        self.tp_rank = dist.get_rank(group=get_tp_group())
+        self.tp_size = dist.get_world_size(group=get_tp_group())
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
@@ -195,5 +203,5 @@ class RowParallelLinear(LinearBase):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         y = F.linear(x, self.weight, self.bias if self.tp_rank == 0 else None)
         if self.tp_size > 1:
-            dist.all_reduce(y)
+            dist.all_reduce(y, group=get_tp_group())
         return y
