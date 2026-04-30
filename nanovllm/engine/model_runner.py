@@ -68,6 +68,8 @@ class ModelRunner:
             quant_method=config.quant_method,
             quant_group_size=config.quant_group_size,
             quant_bits=config.quant_bits,
+            ep_rank=self.ep_rank,
+            ep_size=config.expert_parallel_size,
         )
         # --- Report weight-only GPU memory usage for quantization debugging.
         # We call empty_cache() first so the number reflects the *resident*

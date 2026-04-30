@@ -72,6 +72,8 @@ def load_model(
     *,
     quant_group_size: int = 128,
     quant_bits: int = 4,
+    ep_rank: int = 0,
+    ep_size: int = 1,
 ):
     """Load weights into ``model`` and optionally apply a post-training
     quantization scheme.
@@ -85,26 +87,82 @@ def load_model(
     quant_method : Optional[str]
         ``None`` for full-precision, ``"gptq"`` to apply GPTQ int4 quantization
         after the float weights are loaded.
+    ep_rank : int
+        Expert parallel rank of this process (0 when EP is disabled).
+    ep_size : int
+        Total number of expert parallel ranks (1 when EP is disabled).
     """
     packed_modules_mapping = getattr(model, "packed_modules_mapping", {})
+
+    # Determine which global expert indices belong to this EP rank.
+    # Expert weights in safetensors follow the pattern:
+    #   model.layers.{layer}.mlp.experts.{expert_idx}.{sub_weight}
+    # When ep_size > 1 we skip experts that don't belong to this rank.
+    import re
+    _expert_re = re.compile(r"\.experts\.(\d+)\.")
+
+    def _should_skip_expert(weight_name: str) -> bool:
+        """Return True if this weight belongs to an expert not owned by this rank."""
+        if ep_size <= 1:
+            return False
+        m = _expert_re.search(weight_name)
+        if m is None:
+            return False
+        global_expert_idx = int(m.group(1))
+        experts_per_rank = None
+        # Try to infer experts_per_rank from the model
+        for mod in model.modules():
+            if hasattr(mod, "experts_per_rank"):
+                experts_per_rank = mod.experts_per_rank
+                break
+        if experts_per_rank is None:
+            return False
+        owner_rank = global_expert_idx // experts_per_rank
+        return owner_rank != ep_rank
+
+    def _remap_expert_param_name(weight_name: str) -> str:
+        """Remap global expert index to local expert index in param name."""
+        if ep_size <= 1:
+            return weight_name
+        m = _expert_re.search(weight_name)
+        if m is None:
+            return weight_name
+        global_expert_idx = int(m.group(1))
+        experts_per_rank = None
+        for mod in model.modules():
+            if hasattr(mod, "experts_per_rank"):
+                experts_per_rank = mod.experts_per_rank
+                break
+        if experts_per_rank is None:
+            return weight_name
+        local_expert_idx = global_expert_idx % experts_per_rank
+        return weight_name[:m.start(1)] + str(local_expert_idx) + weight_name[m.end(1):]
 
     for file in glob(os.path.join(path, "*.safetensors")):
         with safe_open(file, "pt", "cpu") as f:
             for weight_name in f.keys():
+                # Skip expert weights that don't belong to this EP rank
+                if _should_skip_expert(weight_name):
+                    continue
+
+                # Remap global expert index → local expert index in param name
+                param_name = _remap_expert_param_name(weight_name)
+
                 for k in packed_modules_mapping:
-                    if k in weight_name:
+                    if k in param_name:
                         v, shard_id = packed_modules_mapping[k]
-                        param_name = weight_name.replace(k, v)
-                        param = model.get_parameter(param_name)
+                        mapped_param_name = param_name.replace(k, v)
+                        param = model.get_parameter(mapped_param_name)
                         weight_loader = getattr(param, "weight_loader")
                         weight_loader(param, f.get_tensor(weight_name), shard_id)
                         break
                 else:
-                    param = model.get_parameter(weight_name)
+                    param = model.get_parameter(param_name)
                     weight_loader = getattr(
                         param, "weight_loader", default_weight_loader
                     )
                     weight_loader(param, f.get_tensor(weight_name))
+
 
     # Apply quantization (if requested) once all float weights are loaded.
     # Always emit a "before" snapshot of the model's weight storage so that the

@@ -24,9 +24,12 @@ class Qwen3MoeForCausalLM(nn.Module):
         "up_proj": ("gate_up_proj", 1),
     }
 
-    def __init__(self, config: Qwen3MoeConfig) -> None:
+    def __init__(self, config: Qwen3MoeConfig, tp_group=None, ep_group=None) -> None:
         super().__init__()
-        self.model = Qwen3MoeModel(config)
+        from nanovllm.layers.linear import set_tp_group
+        set_tp_group(tp_group)
+
+        self.model = Qwen3MoeModel(config, ep_group=ep_group)
         self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
         if config.tie_word_embeddings:
             self.lm_head.weight.data = self.model.embed_tokens.weight.data
@@ -53,6 +56,7 @@ class Qwen3MoeModel(nn.Module):
     def __init__(
         self,
         config: Qwen3MoeConfig,
+        ep_group=None,
     ) -> None:
         super().__init__()
         self.embed_tokens = VocabParallelEmbedding(
@@ -60,7 +64,7 @@ class Qwen3MoeModel(nn.Module):
         )
         self.layers = nn.ModuleList(
             [
-                Qwen3MoeDecoderLayer(config, layer_idx)
+                Qwen3MoeDecoderLayer(config, layer_idx, ep_group=ep_group)
                 for layer_idx in range(config.num_hidden_layers)
             ]
         )
@@ -85,6 +89,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
         self,
         config: Qwen3MoeConfig,
         layer_idx: int = -1,
+        ep_group=None,
     ) -> None:
         super().__init__()
         self.self_attn = Qwen3MoeAttention(
@@ -102,7 +107,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
         if (layer_idx not in mlp_only_layers) and (
             config.num_experts > 0 and (layer_idx + 1) % config.decoder_sparse_step == 0
         ):
-            self.mlp = Qwen3MoeSparseMoeBlock(config=config)
+            self.mlp = Qwen3MoeSparseMoeBlock(config=config, ep_group=ep_group)
         else:
             self.mlp = Qwen3MoeMLP(
                 hidden_size=config.hidden_size,
@@ -236,10 +241,19 @@ class Qwen3MoeMLP(nn.Module):
 
 
 class Qwen3MoeSparseMoeBlock(nn.Module):
+    """
+    MoE block with optional Expert Parallel support.
+    When ep_group is None or ep_size = 1, this is a normal MoE block.
+    When ep_size > 1 each rank holds only (num_experts // ep_size) experts.
+    A two-phase all-to-all is used:
+        1. Dispatch - send each token to the top k experts which are picked by the router
+        2. Combine - send the computed results back to the original rank
+    """
 
     def __init__(
         self,
         config: Qwen3MoeConfig,
+        ep_group = None,
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -248,6 +262,11 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
         self.num_experts = config.num_experts
         self.top_k = config.num_experts_per_tok
+
+        self.ep_group = ep_group
+        self.ep_size = dist.get_world_size(group=self.ep_group) if self.ep_group is not None else 1
+        self.ep_rank = dist.get_rank(group=self.ep_group) if self.ep_group is not None else 0
+        self.experts_per_rank = self.num_experts // self.ep_size
 
         # gating
         self.gate = nn.Linear(self.hidden_size, self.num_experts, bias=False)
@@ -258,34 +277,36 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                     intermediate_size=config.moe_intermediate_size,
                     hidden_act=config.hidden_act,
                 )
-                for _ in range(self.num_experts)
+                for _ in range(self.experts_per_rank)
             ]
         )
-
-    def forward(self, hidden_states: torch.Tensor):
-        sequence_length, hidden_dim = hidden_states.shape
+    
+    def _is_local_expert(self, global_expert_idx: int) -> bool:
+        start = self.ep_rank * self.experts_per_rank
+        end = start + self.experts_per_rank
+        return start <= global_expert_idx < end
+    
+    def _global_to_local_expert(self, global_expert_idx: int) -> int:
+        return global_expert_idx - self.ep_rank * self.experts_per_rank
+    
+    def _forward_local(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        seq_len, hidden_dim = hidden_states.shape
         router_logits = self.gate(hidden_states)
-
-        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
+        routing_weights = F.softmax(router_logits, dim = 1, dtype = torch.float)
         routing_weights, selected_experts = torch.topk(
-            routing_weights, self.top_k, dim=-1
+            routing_weights, self.top_k, dim = -1
         )
         routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
-        # we cast back to the input dtype
         routing_weights = routing_weights.to(hidden_states.dtype)
 
-        final_hidden_states = torch.zeros(
-            hidden_states.shape,
+        final_hidden_states = torch.zeros_like(
+            hidden_states,
             dtype=hidden_states.dtype,
             device=hidden_states.device,
         )
-
-        # One hot encode the selected experts to create an expert mask
-        # this will be used to easily index which expert is going to be sollicitated
         expert_mask = torch.nn.functional.one_hot(
             selected_experts, num_classes=self.num_experts
         ).permute(2, 1, 0)
-
         expert_hitted = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
         for expert_idx in expert_hitted:
             expert_layer = self.experts[expert_idx]
@@ -297,11 +318,136 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
             current_hidden_states = (
                 expert_layer(current_state) * routing_weights[top_x, idx, None]
             )
-
             # However `index_add_` only support torch tensors for indexing so we'll use
             # the `top_x` tensor here.
             final_hidden_states.index_add_(
                 0, top_x, current_hidden_states.to(hidden_states.dtype)
             )
         return final_hidden_states
+    
+    def _forward_ep(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        seq_len, hidden_dim = hidden_states.shape
+        router_logits = self.gate(hidden_states)
+        routing_weights = F.softmax(router_logits, dim = 1, dtype = torch.float)
+        routing_weights, selected_experts = torch.topk(
+            routing_weights, self.top_k, dim = -1
+        )
+        routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
+        routing_weights = routing_weights.to(hidden_states.dtype)
 
+        # ---- Phase 1: Dispatch (all-to-all) ----
+        # For each of the top_k slots, figure out which EP rank owns that expert.
+        # expert_rank[i, k] = selected_experts[i, k] // experts_per_rank
+        expert_rank = selected_experts // self.experts_per_rank
+
+        # Build send buffers: one list entry per destination EP rank.
+        # send_tokens[r]  : hidden states of tokens whose k-th expert lives on rank r
+        # send_weights[r] : corresponding routing weights
+        # send_meta[r]    : (original_token_idx, top_k_slot, local_expert_idx)
+        send_tokens = [[] for _ in range(self.ep_size)]
+        send_weights = [[] for _ in range(self.ep_size)]
+        send_meta = [[] for _ in range(self.ep_size)]
+
+        for k in range(self.top_k):
+            for i in range(seq_len):
+                r = expert_rank[i, k].item()
+                local_expert = selected_experts[i, k] % self.experts_per_rank
+                send_tokens[r].append(hidden_states[i])
+                send_weights[r].append(routing_weights[i, k])
+                send_meta[r].append((i, local_expert))
+
+        send_counts = torch.tensor(
+            [len(send_tokens[r]) for r in range(self.ep_size)],
+            dtype=torch.int32,
+            device=hidden_states.device,
+        )
+        recv_counts = torch.empty_like(send_counts)
+        dist.all_to_all_single(recv_counts, send_counts, group=self.ep_group)
+        flat_send_tokens = torch.stack(
+            [t for r in range(self.ep_size) for t in send_tokens[r]]
+        ) if sum(len(send_tokens[r]) for r in range(self.ep_size)) > 0 else \
+            torch.empty((0, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device)
+        flat_send_weights = torch.stack(
+            [w for r in range(self.ep_size) for w in send_weights[r]]
+        ) if sum(len(send_weights[r]) for r in range(self.ep_size)) > 0 else \
+            torch.empty((0, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device)
+        flat_send_meta = torch.tensor(
+            [m for r in range(self.ep_size) for m in send_meta[r]],
+            dtype=torch.int32,
+            device=hidden_states.device,
+        ) if sum(len(send_meta[r]) for r in range(self.ep_size)) > 0 else \
+            torch.empty((0, 2), dtype=torch.int32, device=hidden_states.device)
+        
+        total_recv = recv_counts.sum().item()
+
+        # all-to-all for token hidden states
+        flat_recv_tokens = torch.empty(
+            total_recv, 
+            hidden_dim,
+            dtype=hidden_states.dtype,
+            device=hidden_states.device,
+        )
+        dist.all_to_all_single(
+            flat_recv_tokens, flat_send_tokens, 
+            output_split_sizes=recv_counts.tolist(), 
+            input_split_sizes=send_counts.tolist(), 
+            group=self.ep_group
+        )
+        # all-to-all for token routing weights
+        flat_recv_weights = torch.empty(
+            total_recv,
+            dtype=hidden_states.dtype,
+            device=hidden_states.device,
+        )
+        dist.all_to_all_single(
+            flat_recv_weights, flat_send_weights, 
+            output_split_sizes=recv_counts.tolist(), 
+            input_split_sizes=send_counts.tolist(), 
+            group=self.ep_group
+        )
+        # all-to-all for token meta data
+        flat_recv_meta = torch.empty(
+            total_recv, 2, dtype=torch.int32, device=hidden_states.device
+        )
+        dist.all_to_all_single(
+            flat_recv_meta, flat_send_meta, 
+            output_split_sizes=recv_counts.tolist(), 
+            input_split_sizes=send_counts.tolist(), 
+            group=self.ep_group
+        )
+        # Local expert foward
+        local_output = torch.zeros_like(flat_recv_tokens)
+        if total_recv > 0:
+            local_expert_ids = flat_recv_meta[:, 1]
+            for local_expert_id in range(self.experts_per_rank):
+                mask = local_expert_ids == local_expert_id
+                if not mask.any():
+                    continue
+                inp = flat_recv_tokens[mask]
+                out = self.experts[local_expert_id](inp)
+                local_output[mask] = out
+        
+        local_output = local_output * flat_recv_weights.unsqueeze(-1)
+        # ---- Phase 2: Combine (all-to-all) ----
+        flat_combined = torch.zeros_like(flat_send_tokens)
+        dist.all_to_all_single(
+            flat_combined, local_output, 
+            output_split_sizes=send_counts.tolist(), 
+            input_split_sizes=recv_counts.tolist(), 
+            group=self.ep_group
+        )
+        final_hidden_states = torch.zeros_like(hidden_states)
+        offset = 0
+        for r in range(self.ep_size):
+            cnt = send_counts[r].item()
+            for j in range(cnt):
+                origin_idx = send_meta[r][j][0]
+                final_hidden_states[origin_idx] = flat_combined[offset + j]
+            offset += cnt
+        return final_hidden_states
+
+    def forward(self, hidden_states: torch.Tensor):
+        if self.ep_size == 1:
+            return self._forward_local(hidden_states)
+        else:
+            return self._forward_ep(hidden_states)
