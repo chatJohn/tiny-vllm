@@ -48,7 +48,7 @@ class Config:
 
         # Expert Parallel Configuration Validation
         assert 1 <= self.expert_parallel_size, (
-            f"expert_paralle_size must be greater than 1"
+            f"when you use expert parallel, expert_paralle_size must be greater than 1"
         )
 
         self.hf_config = AutoConfig.from_pretrained(self.model)
@@ -56,6 +56,12 @@ class Config:
             self.max_model_len, self.hf_config.max_position_embeddings
         )
         assert self.max_num_batched_tokens >= self.max_model_len
+        # Validate the num_experts is divisible by the expert_parallel_size
+        num_experts = getattr(self.hf_config, "num_experts", 0)
+        assert num_experts % self.expert_parallel_size == 0, (
+            f"num_experts must be divisible by expert_parallel_size, "
+            f"got {num_experts} and {self.expert_parallel_size}"
+        )
 
     @property
     def world_size(self) -> int:
