@@ -34,6 +34,22 @@ class Config:
     expert_parallel_communication_backend: str = "nccl"
     expert_parallel_overlap_communication: bool = True # overlap communication and computation
 
+    # Expert Parallel Load Balance
+    # Enable dynamic load balance across EP ranks (redundant experts + overflow re-routing)
+    ep_load_balance: bool = False
+    # Number of redundant replicas for "hot" experts. If > 0, the top-N most
+    # frequently used experts will be replicated on additional ranks so that
+    # their tokens can be dispatched to any of the replicas.
+    ep_num_redundant_experts: int = 0
+    # A rank is considered overloaded if its assigned-token count is greater
+    # than (mean_tokens * ep_rebalance_threshold).  Overflow tokens whose
+    # top-k list contains a replicated expert will be re-routed to the least
+    # loaded replica.
+    ep_rebalance_threshold: float = 1.25
+    # Number of forward steps between two rebalance updates of the placement
+    # map (only used when ep_load_balance is True).  Smaller values react
+    # faster but introduce more overhead.
+    ep_rebalance_interval: int = 100 # this determines when to load balance
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
@@ -62,6 +78,14 @@ class Config:
             f"num_experts must be divisible by expert_parallel_size, "
             f"got {num_experts} and {self.expert_parallel_size}"
         )
+
+        assert self.ep_num_redundant_experts >= 0
+        assert self.ep_rebalance_threshold >= 1.0
+        assert self.ep_rebalance_interval >= 1
+        if self.ep_load_balance:
+            assert self.expert_parallel_size > 1, (
+                "ep_load_balance requires expert_parallel_size > 1"
+            )
 
     @property
     def world_size(self) -> int:

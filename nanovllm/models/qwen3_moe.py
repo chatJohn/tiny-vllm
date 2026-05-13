@@ -24,12 +24,21 @@ class Qwen3MoeForCausalLM(nn.Module):
         "up_proj": ("gate_up_proj", 1),
     }
 
-    def __init__(self, config: Qwen3MoeConfig, tp_group=None, ep_group=None) -> None:
+    def __init__(self, config: Qwen3MoeConfig, tp_group=None, ep_group=None, 
+                 ep_load_balance = False, ep_num_redundant_experts = 0,
+                 ep_rebalance_threshold = 1.25, ep_rebalance_interval = 100) -> None:
         super().__init__()
         from nanovllm.layers.linear import set_tp_group
         set_tp_group(tp_group)
 
-        self.model = Qwen3MoeModel(config, ep_group=ep_group)
+        self.model = Qwen3MoeModel(
+            config, 
+            ep_group=ep_group,
+            ep_load_balance=ep_load_balance,
+            ep_num_redundant_experts=ep_num_redundant_experts,
+            ep_rebalance_threshold=ep_rebalance_threshold,
+            ep_rebalance_interval=ep_rebalance_interval,
+        )
         self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
         if config.tie_word_embeddings:
             self.lm_head.weight.data = self.model.embed_tokens.weight.data
